@@ -1,0 +1,9 @@
+[build]
+base = "frontend"
+publish = "build"
+command = "CI= npm run build"
+
+[build.environment]
+REACT_APP_API_BASE = "https://libreriamundocreativoasistencia-production.up.railway.app"
+REACT_APP_API_URL  = "https://libreriamundocreativoasistencia-production.up.railway.app"
+REACT_APP_USE_JWT  = "true"
