@@ -1,0 +1,103 @@
+# ======================================================
+# 🌐 ARCHIVOS COMUNES DEL PROYECTO
+# ======================================================
+node_modules/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs y reportes
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.log
+
+# Archivos temporales y de sistema
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*.swo
+*.bak
+*.old
+*.orig
+
+# Archivos de compilación y cache
+dist/
+build/
+.cache/
+coverage/
+out/
+tmp/
+.vscode/
+.idea/
+*.zip
+*.tar.gz
+
+# ======================================================
+# ⚙️ BACKEND (Node.js / Express / Prisma)
+# ======================================================
+/backend/node_modules
+/backend/.env
+/backend/.env.*
+/backend/prisma/migrations/*_tmp/
+/backend/prisma/dev.db
+/backend/prisma/*.db-journal
+/backend/generated/
+/backend/src/generated/
+/backend/*.sqlite
+
+# Archivos locales o de debug
+/backend/debug.log
+/backend/npm-debug.log
+/backend/yarn-error.log
+
+# ======================================================
+# 💻 FRONTEND (React)
+# ======================================================
+/frontend/node_modules
+/frontend/.env
+/frontend/.env.*
+/frontend/build
+/frontend/dist
+/frontend/.cache
+/frontend/.vite
+/frontend/coverage
+/frontend/.eslintcache
+
+# ======================================================
+# 🧪 TESTS Y CONFIGURACIÓN
+# ======================================================
+*.test.js
+*.spec.js
+jest.config.js
+coverage/
+reportWebVitals.js
+setupTests.js
+
+# ======================================================
+# 🧰 DEPLOY Y CONFIG LOCAL
+# ======================================================
+/*.local
+/netlify
+/.railway
+/vercel
+/.env.production
+/.firebase/
+firebase-debug.log
+
+# ======================================================
+# 🔒 CLAVES Y CONFIGURACIONES SENSIBLES
+# ======================================================
+# Evita subir claves API, contraseñas o certificados
+*.pem
+*.key
+*.crt
+*.p12
+*.cert
+*.csr
+*.keystore

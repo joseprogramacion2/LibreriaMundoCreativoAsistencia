@@ -1,0 +1,203 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ======== ENTIDADES PRINCIPALES ========
+ */
+
+model Sucursal {
+  id            Int      @id @default(autoincrement())
+  nombre        String
+  direccion     String?
+  activo        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  dispositivos Dispositivo[]
+  empleados    Empleado[]
+}
+
+model Dispositivo {
+  id          Int      @id @default(autoincrement())
+  nombre      String
+  modelo      String
+  ip          String
+  puerto      Int      @default(4370)
+  numeroSerie String?  @unique
+  activo      Boolean  @default(true)
+  sucursalId  Int
+  sucursal    Sucursal @relation(fields: [sucursalId], references: [id])
+
+  ultimoEventoUnix Int                @default(0)
+  ultimoUserSn     Int                @default(0)
+  eventos          AsistenciaEvento[]
+}
+
+// ======== NUEVO: tipo de pago (dejamos ambos, usaremos POR_MES) ========
+enum PagoTipo {
+  POR_HORA
+  POR_MES
+}
+
+model Empleado {
+  id                Int      @id @default(autoincrement())
+  codigo            String   @unique
+  dpi               String?  @unique
+  nombre            String
+  apellido          String
+  correo            String?
+  activo            Boolean  @default(true)
+  creadoEn          DateTime @default(now())
+  actualizadoEn     DateTime @updatedAt
+  sucursalId        Int
+  sucursal          Sucursal @relation(fields: [sucursalId], references: [id])
+  userIdDispositivo Int?
+
+  // Nómina
+  pagoTipo       PagoTipo @default(POR_MES)
+  salarioMensual Decimal  @default(0.00) @db.Decimal(10, 2)
+
+  // 👇👇 NUEVO: referencia de horas para su sueldo (editable por empleado)
+  horasMetaRef   Decimal  @default(160.00) @db.Decimal(6, 2)
+
+  eventos AsistenciaEvento[]
+  turnos  TurnoAsignado[]
+
+  nominaItems NominaItem[]
+}
+
+model Turno {
+  id                Int     @id @default(autoincrement())
+  nombre            String  @unique
+  horaEntrada       String // "HH:MM" 24h
+  horaSalida        String // "HH:MM" 24h
+  toleranciaMinutos Int     @default(5)
+  activo            Boolean @default(true)
+
+  asignaciones TurnoAsignado[]
+}
+
+model TurnoAsignado {
+  id         Int       @id @default(autoincrement())
+  empleadoId Int
+  turnoId    Int
+  desde      DateTime
+  hasta      DateTime?
+
+  empleado Empleado @relation(fields: [empleadoId], references: [id])
+  turno    Turno    @relation(fields: [turnoId], references: [id])
+
+  @@index([empleadoId, desde])
+}
+
+enum EventoTipo {
+  FICHAJE
+}
+
+model AsistenciaEvento {
+  id            Int        @id @default(autoincrement())
+  empleadoId    Int
+  dispositivoId Int
+  tipo          EventoTipo @default(FICHAJE)
+  deviceUnix    Int
+  deviceUserSn  Int?
+  timestampUTC  DateTime
+  crudo         String?
+  creadoEn      DateTime   @default(now())
+
+  empleado    Empleado    @relation(fields: [empleadoId], references: [id])
+  dispositivo Dispositivo @relation(fields: [dispositivoId], references: [id])
+
+  @@unique([dispositivoId, deviceUnix])
+  @@index([empleadoId, timestampUTC])
+  @@index([dispositivoId, deviceUnix])
+  @@index([dispositivoId, deviceUserSn])
+}
+
+model Usuario {
+  id              Int      @id @default(autoincrement())
+  nombre          String
+  usuario         String   @unique
+  correo          String   @unique
+  hash            String
+  activo          Boolean  @default(true)
+  creadoEn        DateTime @default(now())
+  actualizadoEn   DateTime @updatedAt
+  debeCambiarPass Boolean  @default(true)
+
+  rolId Int
+  rol   Rol @relation(fields: [rolId], references: [id])
+
+  historial PasswordHistory[]
+}
+
+model PasswordHistory {
+  id        Int      @id @default(autoincrement())
+  usuarioId Int
+  hash      String
+  creadoEn  DateTime @default(now())
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@index([usuarioId, creadoEn])
+}
+
+model Rol {
+  id       Int       @id @default(autoincrement())
+  nombre   String    @unique
+  permisos String[]
+  usuarios Usuario[]
+}
+
+/**
+ * ======== NÓMINA (POR MES sin extras) ========
+ */
+
+model PeriodoNomina {
+  id       Int      @id @default(autoincrement())
+  nombre   String
+  inicio   DateTime
+  fin      DateTime
+  cerrado  Boolean  @default(false)
+  creadoEn DateTime @default(now())
+
+  // ======== NUEVO: meta de horas del período (p.ej. 160 al mes) ========
+  horasMeta Decimal @default(160.00) @db.Decimal(6, 2)
+
+  items NominaItem[]
+}
+
+model NominaItem {
+  id         Int @id @default(autoincrement())
+  empleadoId Int
+  periodoId  Int
+
+  // Guardamos horas como Decimal para fracciones
+  horasTrabajadas Decimal @default(0.00) @db.Decimal(6, 2)
+
+  // Trazabilidad simple (por si ya las usas)
+  llegadasTarde   Int @default(0)
+  salidasTemprano Int @default(0)
+  inasistencias   Int @default(0)
+
+  // ======== NUEVO: datos congelados del cálculo (SIN EXTRAS)
+  horasMeta  Decimal @default(0.00) @db.Decimal(6, 2)
+  tarifaHora Decimal @default(0.00) @db.Decimal(10, 2) // S/Hmeta
+  sueldoBase Decimal @default(0.00) @db.Decimal(10, 2) // prorrateo mensual
+  bonos      Decimal @default(0.00) @db.Decimal(10, 2)
+  descuentos Decimal @default(0.00) @db.Decimal(10, 2)
+
+  // Neto del período
+  pagoCalculado Decimal @default(0.00) @db.Decimal(10, 2)
+
+  empleado Empleado      @relation(fields: [empleadoId], references: [id])
+  periodo  PeriodoNomina @relation(fields: [periodoId], references: [id])
+
+  @@unique([empleadoId, periodoId])
+}
