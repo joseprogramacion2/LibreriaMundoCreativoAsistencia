@@ -27,6 +27,9 @@ import empleadosSalarioRoutes from "./routes/empleados.salario.routes.js";
 import permisosRoutes from "./routes/permisos.routes.js";
 import rolesRoutes from "./routes/roles.routes.js";
 
+// ⬇️ CAMBIO: nuevo verificador
+import { verifyEmailTransport } from './services/email.js';
+
 const app = express();
 
 const ORIGINS = (process.env.CORS_ORIGINS || "")
@@ -62,6 +65,9 @@ app.use("/roles", rolesRoutes);
 
 // ML (predicción/puntuales)
 app.use("/ml", mlRoutes);
+
+// ⬇️ CAMBIO: verificación email provider al arrancar
+verifyEmailTransport();
 
 // ---------- Paracaídas globales (no tumbar el proceso) ----------
 process.on("unhandledRejection", (e) =>

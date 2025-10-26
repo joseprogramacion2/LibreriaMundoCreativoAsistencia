@@ -3,6 +3,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
+import { sendEmail } from '../services/email.js';   // <-- usamos el servicio central
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -30,7 +31,7 @@ async function authGuard(req, res, next) {
   req.user = {
     id: user.id,
     rol: user.rol?.nombre ?? null,
-    permisos: Array.isArray(user.rol?.permisos) ? user.rol.permisos : [], // ← útil para middlewares
+    permisos: Array.isArray(user.rol?.permisos) ? user.rol.permisos : [],
     mustChange: Boolean(user.debeCambiarPass),
     activo: Boolean(user.activo),
   };
@@ -66,26 +67,6 @@ function genTempPassword() {
   return out;
 }
 
-async function sendEmailIfConfigured(to, subject, html) {
-  try {
-    const { default: nodemailer } = await import('nodemailer');
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: false,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM || '"Sistema" <no-reply@local>',
-      to, subject, html,
-    });
-    return true;
-  } catch (e) {
-    console.warn('[email] no enviado:', e?.message || e);
-    return false;
-  }
-}
-
 /* ============================== Rutas Auth ============================== */
 
 router.post('/login', async (req, res) => {
@@ -104,13 +85,12 @@ router.post('/login', async (req, res) => {
     const ok = await bcrypt.compare(password, user.hash);
     if (!ok) return res.status(401).json({ error: 'Usuario o contraseña inválidos' });
 
-    // ====== incluye permisos en el token y en la respuesta ======
     const permisos = Array.isArray(user.rol?.permisos) ? user.rol.permisos : [];
 
     const payload = {
       id: user.id,
       rol: user.rol?.nombre ?? null,
-      permisos,                                  // ← clave para RequirePerm
+      permisos,
       mustChange: Boolean(user.debeCambiarPass),
     };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
@@ -122,7 +102,7 @@ router.post('/login', async (req, res) => {
         usuario: user.usuario,
         nombre: user.nombre,
         rol: payload.rol,
-        permisos,                                 // ← devuelto al frontend
+        permisos,
       },
       mustChange: payload.mustChange,
     });
@@ -140,7 +120,7 @@ router.get('/me', authGuard, async (req, res) => {
     nombre: u.nombre,
     correo: u.correo,
     rol: u.rol?.nombre ?? null,
-    permisos: Array.isArray(u.rol?.permisos) ? u.rol.permisos : [], // ← también aquí
+    permisos: Array.isArray(u.rol?.permisos) ? u.rol.permisos : [],
     mustChange: Boolean(u.debeCambiarPass),
   });
 });
@@ -167,7 +147,6 @@ router.post('/change-password', authGuard, async (req, res) => {
     const ok = await bcrypt.compare(oldPassword, user.hash);
     if (!ok) return res.status(401).json({ error: 'Contraseña actual incorrecta' });
 
-    // historial últimas 5
     const last = await prisma.passwordHistory.findMany({
       where: { usuarioId: user.id },
       orderBy: { creadoEn: 'desc' },
@@ -259,11 +238,13 @@ router.post('/create-user',
         <p><b>Contraseña temporal:</b> ${temp}</p>
         <p>Inicia sesión y cambia tu contraseña de inmediato.</p>
       `;
-      const emailSent = await sendEmailIfConfigured(
-        created.correo,
-        'Tu cuenta en el Sistema de Asistencia',
-        html
-      );
+      let emailSent = false;
+      try {
+        await sendEmail(created.correo, 'Tu cuenta en el Sistema de Asistencia', html);
+        emailSent = true;
+      } catch (e) {
+        console.error('[create-user][email] ❌', e?.message || e);
+      }
 
       return res.status(201).json({
         id: created.id,
@@ -348,7 +329,7 @@ async function assertNotSuperAdminTarget(id, actionName, res) {
 router.patch('/users/:id',
   authGuard,
   ensurePasswordChanged,
-  roleGuard(' Super Admin', 'Administrador'),
+  roleGuard('Super Admin', 'Administrador'), // <-- quitado el espacio accidental
   async (req, res) => {
     const id = Number(req.params.id);
     const { nombre, usuario, correo, rolId } = req.body || {};
@@ -445,13 +426,19 @@ router.post('/users/:id/resend-temp',
       <p><b>Contraseña temporal:</b> ${temp}</p>
       <p>Inicia sesión y cambia tu contraseña de inmediato.</p>
     `;
-    const emailSent = await sendEmailIfConfigured(user.correo, 'Tu nueva contraseña temporal', html);
+    let emailSent = false;
+    try {
+      await sendEmail(user.correo, 'Tu nueva contraseña temporal', html);
+      emailSent = true;
+    } catch (e) {
+      console.error('[resend-temp][email] ❌', e?.message || e);
+    }
 
     res.json({ ok: true, emailSent });
   }
 );
 
-/* ======== NUEVO: OLVIDÉ MI CONTRASEÑA ======== */
+/* ======== OLVIDÉ MI CONTRASEÑA ======== */
 router.post('/forgot-password', async (req, res) => {
   const usuarioOrCorreo =
     String(req.body?.usuarioOrCorreo ?? req.body?.usuario ?? req.body?.correo ?? req.body?.identifier ?? '').trim();
@@ -499,7 +486,11 @@ router.post('/forgot-password', async (req, res) => {
         <p><b>Contraseña temporal:</b> ${temp}</p>
         <p>Ingresa al sistema y se te pedirá <b>cambiarla</b> inmediatamente.</p>
       `;
-      await sendEmailIfConfigured(user.correo, 'Restablecimiento de contraseña', html);
+      try {
+        await sendEmail(user.correo, 'Restablecimiento de contraseña', html);
+      } catch (e) {
+        console.error('[forgot-password][email] ❌', e?.message || e);
+      }
     }
 
     return res.json({ ok: true, requested: true });
