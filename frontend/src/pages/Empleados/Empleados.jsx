@@ -306,7 +306,6 @@ export default function Empleados() {
       turnoId: currentTurnoId ? String(currentTurnoId) : "",
       userIdDispositivo: r.userIdDispositivo ?? "",
       salarioMensual: r.salarioMensual != null ? String(r.salarioMensual) : "",
-      // 👇 inicializa con lo que venga de BD o 160
       horasMetaRef: r.horasMetaRef != null && r.horasMetaRef !== ""
         ? String(r.horasMetaRef)
         : "160",
@@ -322,6 +321,20 @@ export default function Empleados() {
     setMsg("");
   }
 
+  // ===== ¿userId tomado en esta sucursal? (para UX y bloqueo) =====
+  const userIdTomado = useMemo(() => {
+    const uidStr = String(form.userIdDispositivo ?? "").trim();
+    const suc = String(form.sucursalId ?? "").trim();
+    if (!uidStr || !suc) return false;
+    const uid = Number(uidStr);
+    if (!Number.isFinite(uid) || uid <= 0) return false;
+    return rows.some(r =>
+      String(r.sucursalId) === suc &&
+      Number(r.userIdDispositivo) === uid &&
+      Number(r.id) !== Number(editingId || 0)
+    );
+  }, [form.userIdDispositivo, form.sucursalId, rows, editingId]);
+
   async function guardarEmpleado(e) {
     e.preventDefault();
     setMsg("");
@@ -334,6 +347,23 @@ export default function Empleados() {
     if (!form.turnoId)
       return setMsg("Selecciona un turno.");
 
+    // Validación previa: único por sucursal
+    const uidStr = String(form.userIdDispositivo ?? "").trim();
+    if (uidStr) {
+      const uid = Number(uidStr);
+      if (!Number.isFinite(uid) || uid <= 0) {
+        return setMsg("UserID en el reloj debe ser un número positivo.");
+      }
+      const duplicado = rows.some(r =>
+        String(r.sucursalId) === String(form.sucursalId) &&
+        Number(r.userIdDispositivo) === uid &&
+        Number(r.id) !== Number(editingId || 0)
+      );
+      if (duplicado) {
+        return setMsg("❌ Ya existe un empleado con ese UserID en esta sucursal. Debe ser único por sucursal.");
+      }
+    }
+
     const payload = {
       dpi: dpiDigits,
       nombre: form.nombre.trim(),
@@ -345,7 +375,7 @@ export default function Empleados() {
       turnoId: Number(form.turnoId),
     };
 
-    // 👇 si viene una meta válida, inclúyela
+    // si viene una meta válida, inclúyela
     const hm = Number(form.horasMetaRef);
     if (Number.isFinite(hm) && hm > 0) {
       payload.horasMetaRef = hm;
@@ -364,7 +394,7 @@ export default function Empleados() {
         setMsg("✅ Empleado creado");
       }
 
-      // sueldo lo seguimos enviando por su endpoint dedicado (si llenaron el campo)
+      // sueldo por endpoint dedicado (si llenaron el campo)
       if (String(form.salarioMensual).trim() !== "") {
         await axios.put(
           `${API_BASE}/empleados/${saved.data.id}/salario`,
@@ -425,7 +455,6 @@ export default function Empleados() {
       activo: true,
     });
     setShowTurnos(true);
-    // refrescamos por si los cambiaron desde otro lado
     fetchTurnosAll();
     fetchTurnosActivos();
   }
@@ -514,7 +543,6 @@ export default function Empleados() {
   }
 
   // ===== Opciones de turno para el combo del empleado =====
-  // Si el turno actual del empleado está INACTIVO, lo mostramos como opción deshabilitada [INACTIVO] al inicio.
   const opcionesTurno = useMemo(() => {
     const base = [...turnosActivos];
     const curId = Number(form.turnoId || 0);
@@ -676,8 +704,18 @@ export default function Empleados() {
                     placeholder="ej. 1"
                     value={form.userIdDispositivo}
                     onChange={onFormChange}
-                    style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", width: "100%" }}
+                    style={{
+                      padding: 10,
+                      borderRadius: 10,
+                      border: `1px solid ${userIdTomado ? '#ef4444' : '#e5e7eb'}`,
+                      width: "100%"
+                    }}
                   />
+                  {userIdTomado && (
+                    <div style={{ color: "#b91c1c", fontSize: 12, marginTop: 6 }}>
+                      Ya existe un empleado con ese UserID en esta sucursal.
+                    </div>
+                  )}
                 </div>
               </div>
 

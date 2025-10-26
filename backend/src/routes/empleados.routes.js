@@ -130,8 +130,25 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ ok:false, message:"Seleccionar turno es obligatorio." });
     }
 
+    const sucId = Number(sucursalId);
     const existeTurno = await prisma.turno.findUnique({ where: { id: Number(turnoId) } });
     if (!existeTurno) return res.status(404).json({ ok:false, message:"Turno no encontrado." });
+
+    // ===== Validación: userIdDispositivo único por sucursal =====
+    let uid = null;
+    if (userIdDispositivo !== "" && userIdDispositivo != null) {
+      uid = Number(userIdDispositivo);
+      if (!Number.isFinite(uid) || uid <= 0) {
+        return res.status(400).json({ ok:false, message:"UserID en el reloj debe ser un número positivo." });
+      }
+      const yaExiste = await prisma.empleado.findFirst({
+        where: { sucursalId: sucId, userIdDispositivo: uid },
+        select: { id: true }
+      });
+      if (yaExiste) {
+        return res.status(409).json({ ok:false, message:"Ya existe un empleado con ese UserID en esta sucursal." });
+      }
+    }
 
     const finalCodigo = await nextEmpCode();
     const desde = floorToLocalDayGT(); // hoy 00:00 GT -> UTC equivalente
@@ -144,27 +161,19 @@ router.post("/", async (req, res) => {
         nombre: String(nombre || "").trim(),
         apellido: String(apellido || "").trim(),
         correo: correo?.trim() || null,
-
-        // relación sucursal por connect
-        sucursal: { connect: { id: Number(sucursalId) } },
-
+        sucursal: { connect: { id: sucId } },
         activo: !!activo,
-        userIdDispositivo:
-          userIdDispositivo === "" || userIdDispositivo == null
-            ? null
-            : Number(userIdDispositivo),
+        userIdDispositivo: uid,
       };
 
       const s = Number(salarioMensual);
       if (Number.isFinite(s)) {
-        // solo seteamos si vino número; si no, dejamos default 0.00 del schema
         data.salarioMensual = s;
       }
 
-      // Guardar meta si viene y es válida (>0)
       const hm = Number(horasMetaRef);
       if (Number.isFinite(hm) && hm > 0) {
-        data.horasMetaRef = hm; // 👈 nombre correcto según Prisma
+        data.horasMetaRef = hm;
       }
 
       const emp = await tx.empleado.create({ data });
@@ -196,8 +205,15 @@ router.post("/", async (req, res) => {
 
     res.json(full);
   } catch (e) {
-    if (e?.code === "P2002" && Array.isArray(e.meta?.target) && e.meta.target.includes("dpi")) {
-      return res.status(409).json({ ok:false, message:"DPI ya está registrado." });
+    if (e?.code === "P2002" && Array.isArray(e.meta?.target)) {
+      // Único por sucursal para userId
+      if (e.meta.target.includes("sucursalId") && e.meta.target.includes("userIdDispositivo")) {
+        return res.status(409).json({ ok:false, message:"Ya existe un empleado con ese UserID en esta sucursal." });
+      }
+      // Único por DPI
+      if (e.meta.target.includes("dpi")) {
+        return res.status(409).json({ ok:false, message:"DPI ya está registrado." });
+      }
     }
     console.error("POST /empleados error:", e);
     res.status(500).json({ ok:false, message:"Error interno al crear empleado." });
@@ -212,9 +228,18 @@ router.put("/:id", async (req, res) => {
     const body = req.body || {};
     const data = {};
 
+    // Cargamos empleado actual (necesario para validar unicidad con sucursal actual o nueva)
+    const actual = await prisma.empleado.findUnique({
+      where: { id },
+      select: { sucursalId: true },
+    });
+    if (!actual) return res.status(404).json({ ok:false, message:"Empleado no encontrado." });
+
     // si viene sucursalId, usamos connect en la relación
+    let targetSucursalId = actual.sucursalId;
     if ("sucursalId" in body) {
-      data.sucursal = { connect: { id: Number(body.sucursalId) } };
+      targetSucursalId = Number(body.sucursalId);
+      data.sucursal = { connect: { id: targetSucursalId } };
     }
     if ("activo" in body) data.activo = !!body.activo;
 
@@ -239,9 +264,23 @@ router.put("/:id", async (req, res) => {
       }
     }
 
+    // ===== Validación: userIdDispositivo único por sucursal =====
     if ("userIdDispositivo" in body) {
       const v = body.userIdDispositivo;
-      data.userIdDispositivo = (v === "" || v === null) ? null : Number(v);
+      const uid = (v === "" || v === null) ? null : Number(v);
+      if (uid != null) {
+        if (!Number.isFinite(uid) || uid <= 0) {
+          return res.status(400).json({ ok:false, message:"UserID en el reloj debe ser un número positivo." });
+        }
+        const yaExiste = await prisma.empleado.findFirst({
+          where: { sucursalId: targetSucursalId, userIdDispositivo: uid, id: { not: id } },
+          select: { id: true },
+        });
+        if (yaExiste) {
+          return res.status(409).json({ ok:false, message:"Ya existe un empleado con ese UserID en esta sucursal." });
+        }
+      }
+      data.userIdDispositivo = uid;
     }
 
     if ("dpi" in body) {
@@ -268,7 +307,7 @@ router.put("/:id", async (req, res) => {
     if ("horasMetaRef" in body) {
       const hm = Number(body.horasMetaRef);
       if (Number.isFinite(hm) && hm > 0) {
-        data.horasMetaRef = hm; // 👈 nombre correcto según Prisma
+        data.horasMetaRef = hm;
       }
     }
 
@@ -332,8 +371,13 @@ router.put("/:id", async (req, res) => {
     if (e?.message === "CANT_CHANGE_TURNO_TODAY") {
       return res.status(400).json({ ok:false, message: e?.meta?.message || "No se puede cambiar el turno hoy." });
     }
-    if (e?.code === "P2002" && Array.isArray(e.meta?.target) && e.meta.target.includes("dpi")) {
-      return res.status(409).json({ ok:false, message:"DPI ya está registrado." });
+    if (e?.code === "P2002" && Array.isArray(e.meta?.target)) {
+      if (e.meta.target.includes("sucursalId") && e.meta.target.includes("userIdDispositivo")) {
+        return res.status(409).json({ ok:false, message:"Ya existe un empleado con ese UserID en esta sucursal." });
+      }
+      if (e.meta.target.includes("dpi")) {
+        return res.status(409).json({ ok:false, message:"DPI ya está registrado." });
+      }
     }
     console.error("PUT /empleados/:id error:", e);
     res.status(500).json({ ok:false, message:"Error interno al actualizar empleado." });

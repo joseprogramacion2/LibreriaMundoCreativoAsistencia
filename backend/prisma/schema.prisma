@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -70,6 +71,8 @@ model Empleado {
   turnos  TurnoAsignado[]
 
   nominaItems NominaItem[]
+
+  @@unique([sucursalId, userIdDispositivo], map: "uniq_userid_por_sucursal")
 }
 
 model Turno {
@@ -167,7 +170,7 @@ model PeriodoNomina {
   cerrado  Boolean  @default(false)
   creadoEn DateTime @default(now())
 
-  // ======== NUEVO: meta de horas del período (p.ej. 160 al mes) ========
+  // ======== NUEVO: meta de horas del período (p.ej. 160 al mes)
   horasMeta Decimal @default(160.00) @db.Decimal(6, 2)
 
   items NominaItem[]
