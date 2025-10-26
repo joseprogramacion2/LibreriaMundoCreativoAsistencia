@@ -1,22 +1,18 @@
-// backend/src/routes/sucursales.routes.js
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 const router = Router();
 
-// GET /sucursales
-// (opcional) ?onlyActivas=1 para traer solo activas
-router.get("/", async (req, res) => {
-  const onlyActivas = String(req.query.onlyActivas || "") === "1";
+// =================== LISTAR ===================
+router.get("/", async (_req, res) => {
   const rows = await prisma.sucursal.findMany({
-    where: onlyActivas ? { activo: true } : undefined,
     orderBy: { id: "desc" },
   });
   res.json(rows);
 });
 
-// POST /sucursales
+// =================== CREAR ===================
 router.post("/", async (req, res) => {
   try {
     const { nombre, direccion, activo = true } = req.body;
@@ -24,7 +20,11 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "El nombre es obligatorio." });
     }
     const created = await prisma.sucursal.create({
-      data: { nombre: nombre.trim(), direccion: direccion || null, activo: !!activo },
+      data: {
+        nombre: nombre.trim(),
+        direccion: direccion?.trim() || null,
+        activo: !!activo,
+      },
     });
     res.json(created);
   } catch (e) {
@@ -33,44 +33,48 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PUT /sucursales/:id
+// =================== ACTUALIZAR ===================
 router.put("/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
     const body = req.body || {};
 
-    // Si se intenta desactivar, validar dependencias
+    // === Si se intenta DESACTIVAR la sucursal ===
     if ("activo" in body && body.activo === false) {
-      // Empleados activos en esa sucursal
+      // 1. Verificar empleados activos
       const empleadosActivos = await prisma.empleado.count({
         where: { sucursalId: id, activo: true },
       });
       if (empleadosActivos > 0) {
         return res.status(400).json({
           message:
-            "No se puede desactivar: existen empleados activos ligados a esta sucursal. Reasígnalos o desactívalos primero.",
+            "❌ No se puede desactivar: existen empleados activos ligados a esta sucursal. Desactívalos o reasígnalos primero.",
         });
       }
 
-      // Dispositivos activos en esa sucursal
+      // 2. Verificar dispositivos activos
       const dispositivosActivos = await prisma.dispositivo.count({
         where: { sucursalId: id, activo: true },
       });
       if (dispositivosActivos > 0) {
         return res.status(400).json({
           message:
-            "No se puede desactivar: existen lectores/dispositivos activos en esta sucursal. Desactívalos o muévelos primero.",
+            "❌ No se puede desactivar: existen dispositivos activos ligados a esta sucursal. Desactívalos o muévelos primero.",
         });
       }
     }
 
-    // Actualización genérica (nombre/dirección/activo)
+    // === Actualizar campos ===
     const data = {};
     if ("nombre" in body) data.nombre = String(body.nombre || "").trim();
-    if ("direccion" in body) data.direccion = body.direccion || null;
+    if ("direccion" in body) data.direccion = body.direccion?.trim() || null;
     if ("activo" in body) data.activo = !!body.activo;
 
-    const updated = await prisma.sucursal.update({ where: { id }, data });
+    const updated = await prisma.sucursal.update({
+      where: { id },
+      data,
+    });
+
     res.json(updated);
   } catch (e) {
     console.error("PUT /sucursales/:id error:", e);
@@ -81,4 +85,5 @@ router.put("/:id", async (req, res) => {
   }
 });
 
+// =================== EXPORTAR ===================
 export default router;

@@ -1,6 +1,6 @@
 // frontend/src/pages/Dispositivos.jsx  (reemplaza el componente completo)
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getAuth } from "../../utils/auth";
 
@@ -37,6 +37,18 @@ export default function Dispositivos() {
     sucursalId: "",
     activo: true,
   });
+
+  // 👉 Solo sucursales activas para el selector
+  const sucursalesActivas = useMemo(
+    () => (Array.isArray(sucursales) ? sucursales.filter((s) => !!s.activo) : []),
+    [sucursales]
+  );
+
+  // Si estamos editando y la sucursal actual está inactiva, la mostramos marcada como INACTIVA
+  const sucursalSeleccionada = useMemo(() => {
+    const idSel = Number(form.sucursalId || 0);
+    return sucursales.find((s) => Number(s.id) === idSel) || null;
+  }, [form.sucursalId, sucursales]);
 
   function resetForm() {
     setForm({ nombre: "", modelo: "", ip: "", sucursalId: "", activo: true });
@@ -296,7 +308,7 @@ export default function Dispositivos() {
                       >
                         {testingId === r.id ? "Probando…" : "Probar"}
                       </button>
-                      
+
                     </div>
                   </td>
                 </tr>
@@ -371,7 +383,16 @@ export default function Dispositivos() {
                 <select name="sucursalId" value={form.sucursalId} onChange={onChange}
                         style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}>
                   <option value="">Sucursal *</option>
-                  {sucursales.map((s) => (
+
+                  {/* Si la sucursal actual está INACTIVA, muéstrala como referencia */}
+                  {modalMode === "edit" && sucursalSeleccionada && !sucursalSeleccionada.activo && (
+                    <option value={sucursalSeleccionada.id} disabled>
+                      [INACTIVA] {sucursalSeleccionada.nombre}
+                    </option>
+                  )}
+
+                  {/* Solo sucursales ACTIVAS para elegir */}
+                  {sucursalesActivas.map((s) => (
                     <option key={s.id} value={s.id}>{s.nombre}</option>
                   ))}
                 </select>
