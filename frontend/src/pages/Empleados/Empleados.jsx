@@ -167,7 +167,6 @@ export default function Empleados() {
     activo: true,
   });
   const [turnoMsg, setTurnoMsg] = useState("");
-
   const [turnoSaving, setTurnoSaving] = useState(false);
   const [turnoEditId, setTurnoEditId] = useState(null);
 
@@ -218,7 +217,7 @@ export default function Empleados() {
     setLoading(true);
     try {
       const [suc] = await Promise.all([
-        axios.get(`${API_BASE}/sucursales`, { headers }),
+        axios.get(`${API_BASE}/sucursales`, { headers }), // trae todas para filtros
       ]);
       setSucursales(Array.isArray(suc.data) ? suc.data : suc.data.items || []);
       await Promise.all([fetchTurnosActivos(), fetchTurnosAll()]);
@@ -553,6 +552,18 @@ export default function Empleados() {
     return base;
   }, [turnosActivos, turnosAll, modalMode, form.turnoId]);
 
+  // ===== NUEVO: Opciones de sucursal para el combo del empleado =====
+  // Solo activas; si estás editando y la sucursal actual está inactiva, la anteponemos como [INACTIVA]
+  const opcionesSucursal = useMemo(() => {
+    const base = sucursales.filter(s => !!s.activo);
+    const curId = Number(form.sucursalId || 0);
+    if (modalMode === "edit" && curId && !base.some(s => Number(s.id) === curId)) {
+      const s = sucursales.find(x => Number(x.id) === curId);
+      if (s) base.unshift({ ...s, _inactive: true });
+    }
+    return base;
+  }, [sucursales, form.sucursalId, modalMode]);
+
   return (
     <div style={{ paddingRight: 8 }}>
       {/* Barra de acciones + filtros */}
@@ -567,6 +578,7 @@ export default function Empleados() {
             placeholder="Buscar por nombre, código o DPI"
             style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", minWidth: 220 }}
           />
+          {/* El filtro de la tabla puede listar TODAS las sucursales */}
           <select
             value={filtroSucursal}
             onChange={(e) => setFiltroSucursal(e.target.value)}
@@ -574,7 +586,9 @@ export default function Empleados() {
           >
             <option value="">Todas las sucursales</option>
             {sucursales.map((s) => (
-              <option key={s.id} value={s.id}>{s.nombre}</option>
+              <option key={s.id} value={s.id}>
+                {s.nombre}{!s.activo ? " [INACTIVA]" : ""}
+              </option>
             ))}
           </select>
           <select
@@ -750,8 +764,10 @@ export default function Empleados() {
                     style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb", width: "100%" }}
                   >
                     <option value="">Selecciona…</option>
-                    {sucursales.map((s) => (
-                      <option key={s.id} value={s.id}>{s.nombre}</option>
+                    {opcionesSucursal.map((s) => (
+                      <option key={s.id} value={s.id} disabled={s._inactive}>
+                        {s._inactive ? "[INACTIVA] " : ""}{s.nombre}
+                      </option>
                     ))}
                   </select>
                 </div>

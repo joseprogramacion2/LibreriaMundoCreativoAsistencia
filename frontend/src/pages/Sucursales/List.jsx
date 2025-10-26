@@ -24,7 +24,7 @@ export default function Sucursales() {
   const [form, setForm] = useState({ nombre: "", direccion: "", activo: true });
 
   // Modal Confirmación (activar/desactivar)
-  const [confirmData, setConfirmData] = useState(null); // { id, nombre, nuevoEstado }
+  const [confirmData, setConfirmData] = useState(null); // { id, nombre, nuevoEstado, error? }
 
   function onFormChange(e) {
     const { name, value, type, checked } = e.target;
@@ -43,15 +43,19 @@ export default function Sucursales() {
       setLoading(false);
     }
   }
-  useEffect(() => { fetchRows(); }, []);
 
-  // Filtro local reactivo
+  useEffect(() => {
+    fetchRows();
+  }, []);
+
+  // Filtro local
   const rowsFiltradas = useMemo(() => {
     let list = rows;
     if (filtroTexto.trim()) {
       const q = filtroTexto.toLowerCase();
       list = list.filter(
         (r) =>
+          String(r.id).includes(q) ||
           r.nombre.toLowerCase().includes(q) ||
           (r.direccion || "").toLowerCase().includes(q)
       );
@@ -106,8 +110,12 @@ export default function Sucursales() {
       }
       await fetchRows();
       setTimeout(() => cerrarModal(), 250);
-    } catch {
-      setMsg("❌ No se pudo guardar la sucursal.");
+    } catch (err) {
+      const em =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        "❌ No se pudo guardar la sucursal.";
+      setMsg(em);
     } finally {
       setSaving(false);
     }
@@ -115,8 +123,9 @@ export default function Sucursales() {
 
   // Confirmación activar/desactivar
   function pedirConfirmacionEstado(r) {
-    setConfirmData({ id: r.id, nombre: r.nombre, nuevoEstado: !r.activo });
+    setConfirmData({ id: r.id, nombre: r.nombre, nuevoEstado: !r.activo, error: "" });
   }
+
   async function confirmarEstado() {
     if (!confirmData) return;
     try {
@@ -127,17 +136,30 @@ export default function Sucursales() {
       );
       setConfirmData(null);
       fetchRows();
-    } catch {
-      setMsg("❌ No se pudo cambiar el estado.");
-      setConfirmData(null);
+    } catch (e) {
+      const m =
+        e?.response?.data?.message ||
+        e?.response?.data?.error ||
+        "❌ No se pudo cambiar el estado.";
+      setConfirmData((prev) => ({ ...(prev || {}), error: m }));
     }
   }
 
   // Badges
   function EstadoBadge({ activo }) {
     const s = activo
-      ? { text: "Activo", bg: "rgba(16,185,129,.12)", bd: "rgba(16,185,129,.35)", color: "#065f46" }
-      : { text: "Inactivo", bg: "rgba(239,68,68,.10)", bd: "rgba(239,68,68,.35)", color: "#991b1b" };
+      ? {
+          text: "Activo",
+          bg: "rgba(16,185,129,.12)",
+          bd: "rgba(16,185,129,.35)",
+          color: "#065f46",
+        }
+      : {
+          text: "Inactivo",
+          bg: "rgba(239,68,68,.10)",
+          bd: "rgba(239,68,68,.35)",
+          color: "#991b1b",
+        };
     return (
       <span
         style={{
@@ -167,13 +189,15 @@ export default function Sucursales() {
           marginBottom: 12,
         }}
       >
-        <button onClick={abrirCrear} className="btn-chip btn-emerald">➕ Agregar sucursal</button>
+        <button onClick={abrirCrear} className="btn-chip btn-emerald">
+          ➕ Agregar sucursal
+        </button>
 
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <input
             value={filtroTexto}
             onChange={(e) => setFiltroTexto(e.target.value)}
-            placeholder="Buscar por nombre o dirección"
+            placeholder="Buscar por ID, nombre o dirección"
             style={{
               padding: 10,
               borderRadius: 10,
@@ -193,11 +217,30 @@ export default function Sucursales() {
         </div>
       </div>
 
+      {/* Mensaje global */}
+      {msg && (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: 10,
+            borderRadius: 10,
+            color: /✅/.test(msg) ? "#065f46" : "#991b1b",
+            background: /✅/.test(msg) ? "rgba(16,185,129,.12)" : "rgba(239,68,68,.10)",
+            border: `1px solid ${
+              /✅/.test(msg) ? "rgba(16,185,129,.35)" : "rgba(239,68,68,.35)"
+            }`,
+          }}
+        >
+          {msg}
+        </div>
+      )}
+
       {/* Tabla */}
       <div style={{ overflowX: "auto" }}>
         <table width="100%" cellPadding={10} style={{ borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#f1f5f9" }}>
+              <th align="left">ID</th>
               <th align="left">Nombre</th>
               <th align="left">Dirección</th>
               <th align="center">Estado</th>
@@ -207,6 +250,7 @@ export default function Sucursales() {
           <tbody>
             {rowsFiltradas.map((r) => (
               <tr key={r.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                <td>#{r.id}</td>
                 <td>{r.nombre}</td>
                 <td>{r.direccion || "-"}</td>
                 <td align="center">
@@ -214,11 +258,25 @@ export default function Sucursales() {
                 </td>
                 <td>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button className="btn-chip btn-indigo" onClick={() => abrirEditar(r)}>Editar</button>
+                    <button className="btn-chip btn-indigo" onClick={() => abrirEditar(r)}>
+                      Editar
+                    </button>
                     {r.activo ? (
-                      <button className="btn-chip btn-danger" onClick={() => pedirConfirmacionEstado(r)}>Desactivar</button>
+                      <button
+                        className="btn-chip btn-danger"
+                        onClick={() => pedirConfirmacionEstado(r)}
+                        title="Desactivar sucursal"
+                      >
+                        Desactivar
+                      </button>
                     ) : (
-                      <button className="btn-chip btn-emerald" onClick={() => pedirConfirmacionEstado(r)}>Activar</button>
+                      <button
+                        className="btn-chip btn-emerald"
+                        onClick={() => pedirConfirmacionEstado(r)}
+                        title="Activar sucursal"
+                      >
+                        Activar
+                      </button>
                     )}
                   </div>
                 </td>
@@ -226,7 +284,7 @@ export default function Sucursales() {
             ))}
             {rowsFiltradas.length === 0 && (
               <tr>
-                <td colSpan={4} style={{ padding: 20, textAlign: "center", color: "#64748b" }}>
+                <td colSpan={5} style={{ padding: 20, textAlign: "center", color: "#64748b" }}>
                   {loading ? "Cargando…" : "Sin sucursales"}
                 </td>
               </tr>
@@ -270,7 +328,7 @@ export default function Sucursales() {
               }}
             >
               <div style={{ fontWeight: 800 }}>
-                {modalMode === "edit" ? "Editar sucursal" : "Nueva sucursal"}
+                {modalMode === "edit" ? `Editar sucursal #${editingId}` : "Nueva sucursal"}
               </div>
               <button
                 onClick={cerrarModal}
@@ -288,9 +346,7 @@ export default function Sucursales() {
                   padding: 10,
                   borderRadius: 10,
                   color: /✅/.test(msg) ? "#065f46" : "#991b1b",
-                  background: /✅/.test(msg)
-                    ? "rgba(16,185,129,.12)"
-                    : "rgba(239,68,68,.10)",
+                  background: /✅/.test(msg) ? "rgba(16,185,129,.12)" : "rgba(239,68,68,.10)",
                   border: `1px solid ${
                     /✅/.test(msg) ? "rgba(16,185,129,.35)" : "rgba(239,68,68,.35)"
                   }`,
@@ -322,27 +378,23 @@ export default function Sucursales() {
                   name="activo"
                   checked={form.activo}
                   onChange={onFormChange}
-                />
+                />{" "}
                 Activa
               </label>
 
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", paddingTop: 6 }}>
-  <button
-    type="button"
-    onClick={cerrarModal}
-    className="btn-chip btn-slate"
-  >
-    Cancelar
-  </button>
-  <button
-    type="submit"
-    disabled={saving}
-    className="btn-chip btn-emerald"
-    style={{ minWidth: 180 }}
-  >
-    {saving ? "Guardando…" : modalMode === "edit" ? "Guardar cambios" : "Crear"}
-  </button>
-</div>
+                <button type="button" onClick={cerrarModal} className="btn-chip btn-slate">
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="btn-chip btn-emerald"
+                  style={{ minWidth: 180 }}
+                >
+                  {saving ? "Guardando…" : modalMode === "edit" ? "Guardar cambios" : "Crear"}
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -396,18 +448,38 @@ export default function Sucursales() {
                 <div style={{ fontWeight: 800, fontSize: 16 }}>Confirmar acción</div>
                 <div style={{ color: "#475569" }}>
                   ¿Seguro que deseas {confirmData.nuevoEstado ? "activar" : "desactivar"} la
-                  sucursal <strong>{confirmData.nombre}</strong>?
+                  sucursal <strong>#{confirmData.id} — {confirmData.nombre}</strong>?
                 </div>
               </div>
             </div>
+
+            {confirmData?.error && (
+              <div
+                style={{
+                  margin: 12,
+                  padding: 10,
+                  borderRadius: 10,
+                  color: "#991b1b",
+                  background: "rgba(239,68,68,.10)",
+                  border: "1px solid rgba(239,68,68,.35)",
+                }}
+              >
+                ❌ {confirmData.error}
+              </div>
+            )}
+
             <div style={{ padding: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button onClick={() => setConfirmData(null)} className="btn-chip btn-slate">
                 Cancelar
               </button>
               {confirmData.nuevoEstado ? (
-                <button onClick={confirmarEstado} className="btn-chip btn-emerald">Activar</button>
+                <button onClick={confirmarEstado} className="btn-chip btn-emerald">
+                  Activar
+                </button>
               ) : (
-                <button onClick={confirmarEstado} className="btn-chip btn-danger">Desactivar</button>
+                <button onClick={confirmarEstado} className="btn-chip btn-danger">
+                  Desactivar
+                </button>
               )}
             </div>
           </div>
@@ -418,24 +490,16 @@ export default function Sucursales() {
       <style>{`
         .btn-chip{
           appearance:none;border:none;border-radius:999px;padding:8px 12px;font-weight:700;
-          box-shadow:0 4px 14px rgba(2,6,23,.12); cursor:pointer; transition:filter .12s, transform .05s;
-          display:inline-flex; align-items:center; justify-content:center; height:38px; line-height:1; white-space:nowrap;
+          box-shadow:0 4px 14px rgba(2,6,23,.12);
+          cursor:pointer; transition:filter .12s, transform .05s;
+          display:inline-flex; align-items:center; justify-content:center;
+          height:38px; line-height:1; white-space:nowrap;
         }
-        .btn-chip:active{ transform:translateY(1px); }
-        .btn-indigo{ background:linear-gradient(135deg,#6366f1,#7c3aed); color:#fff; }
-        .btn-emerald{ background:linear-gradient(135deg,#10b981,#22c55e); color:#fff; }
-        .btn-slate{ background:#475569; color:#fff; }
-        .btn-danger{ background:linear-gradient(135deg,#ef4444,#dc2626); color:#fff; }
-
-        .btn-cta{
-          width:100%; appearance:none; border:none; border-radius:12px; padding:12px 14px;
-          font-weight:800; letter-spacing:.2px; color:#fff; min-height:46px; font-size:15px;
-          background:linear-gradient(135deg,#6366f1,#22c55e);
-          box-shadow:0 10px 20px rgba(2,6,23,.2); cursor:pointer;
-          transition:filter .12s, transform .05s;
-        }
-        .btn-cta:hover{ filter:brightness(1.03); }
-        .btn-cta:active{ transform:translateY(1px); }
+        .btn-chip:active{ transform:translateY(1px) }
+        .btn-indigo{ background:linear-gradient(135deg,#6366f1,#7c3aed); color:#fff }
+        .btn-emerald{ background:linear-gradient(135deg,#10b981,#22c55e); color:#fff }
+        .btn-slate{ background:#475569; color:#fff }
+        .btn-danger{ background:linear-gradient(135deg,#ef4444,#dc2626); color:#fff }
       `}</style>
     </div>
   );

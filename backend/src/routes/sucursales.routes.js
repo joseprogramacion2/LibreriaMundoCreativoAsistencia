@@ -1,28 +1,84 @@
+// backend/src/routes/sucursales.routes.js
 import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
+
 const prisma = new PrismaClient();
 const router = Router();
 
 // GET /sucursales
-router.get("/", async (_req, res) => {
-  const rows = await prisma.sucursal.findMany({ orderBy: { id: "desc" } });
+// (opcional) ?onlyActivas=1 para traer solo activas
+router.get("/", async (req, res) => {
+  const onlyActivas = String(req.query.onlyActivas || "") === "1";
+  const rows = await prisma.sucursal.findMany({
+    where: onlyActivas ? { activo: true } : undefined,
+    orderBy: { id: "desc" },
+  });
   res.json(rows);
 });
 
 // POST /sucursales
 router.post("/", async (req, res) => {
-  const { nombre, direccion, activo = true } = req.body;
-  const created = await prisma.sucursal.create({
-    data: { nombre, direccion: direccion || null, activo: !!activo },
-  });
-  res.json(created);
+  try {
+    const { nombre, direccion, activo = true } = req.body;
+    if (!String(nombre || "").trim()) {
+      return res.status(400).json({ message: "El nombre es obligatorio." });
+    }
+    const created = await prisma.sucursal.create({
+      data: { nombre: nombre.trim(), direccion: direccion || null, activo: !!activo },
+    });
+    res.json(created);
+  } catch (e) {
+    console.error("POST /sucursales error:", e);
+    res.status(500).json({ message: "Error al crear sucursal." });
+  }
 });
 
 // PUT /sucursales/:id
 router.put("/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  const updated = await prisma.sucursal.update({ where: { id }, data: req.body });
-  res.json(updated);
+  try {
+    const id = Number(req.params.id);
+    const body = req.body || {};
+
+    // Si se intenta desactivar, validar dependencias
+    if ("activo" in body && body.activo === false) {
+      // Empleados activos en esa sucursal
+      const empleadosActivos = await prisma.empleado.count({
+        where: { sucursalId: id, activo: true },
+      });
+      if (empleadosActivos > 0) {
+        return res.status(400).json({
+          message:
+            "No se puede desactivar: existen empleados activos ligados a esta sucursal. Reasígnalos o desactívalos primero.",
+        });
+      }
+
+      // Dispositivos activos en esa sucursal
+      const dispositivosActivos = await prisma.dispositivo.count({
+        where: { sucursalId: id, activo: true },
+      });
+      if (dispositivosActivos > 0) {
+        return res.status(400).json({
+          message:
+            "No se puede desactivar: existen lectores/dispositivos activos en esta sucursal. Desactívalos o muévelos primero.",
+        });
+      }
+    }
+
+    // Actualización genérica (nombre/dirección/activo)
+    const data = {};
+    if ("nombre" in body) data.nombre = String(body.nombre || "").trim();
+    if ("direccion" in body) data.direccion = body.direccion || null;
+    if ("activo" in body) data.activo = !!body.activo;
+
+    const updated = await prisma.sucursal.update({ where: { id }, data });
+    res.json(updated);
+  } catch (e) {
+    console.error("PUT /sucursales/:id error:", e);
+    if (String(e?.message || "").includes("Record to update not found")) {
+      return res.status(404).json({ message: "Sucursal no encontrada." });
+    }
+    res.status(500).json({ message: "Error al actualizar sucursal." });
+  }
 });
 
 export default router;
