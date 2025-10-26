@@ -1,10 +1,10 @@
 // backend/src/routes/ingest.js
 import { Router } from "express";
-import prisma from "../db/prisma.js";   // <— usa tu singleton
+import prisma from "../db/prisma.js";
 
 const router = Router();
 
-/** ✅ Middleware SOLO para la ruta que lo requiere */
+/** ✅ Solo esta ruta requiere token */
 function tokenCheck(req, res, next) {
   const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   if (token !== process.env.INGEST_TOKEN) {
@@ -15,7 +15,7 @@ function tokenCheck(req, res, next) {
 
 /**
  * Espera un array de eventos:
- * [{ deviceIP, userIdDispositivo, timestampUTC, sucursalId, raw }]
+ * [{ deviceIP, userIdDispositivo, timestampUTC, sucursalId?, raw }]
  */
 router.post("/asistencia/ingest", tokenCheck, async (req, res) => {
   try {
@@ -26,27 +26,45 @@ router.post("/asistencia/ingest", tokenCheck, async (req, res) => {
 
     let inserted = 0, skipped = 0, dup = 0;
 
-    // Cache de dispositivos por IP
+    // Cache dispositivos por IP (incluye sucursalId)
     const allDisps = await prisma.dispositivo.findMany({
       select: { id: true, ip: true, sucursalId: true },
     });
-    const findDisp = (ip) =>
-      allDisps.find((x) => String(x.ip).trim() === String(ip).trim()) || null;
+    const byIP = new Map(allDisps.map(d => [String(d.ip).trim(), d]));
 
     for (const it of items) {
       try {
-        const device = findDisp(it.deviceIP);
-        if (!device) { skipped++; continue; }
+        const deviceIP = String(it.deviceIP || "").trim();
+        const device = byIP.get(deviceIP);
+        if (!device) {
+          // reloj desconocido → saltamos
+          skipped++;
+          continue;
+        }
 
-        // Buscar empleado por userIdDispositivo
-        const emp = await prisma.empleado.findFirst({
-          where: { userIdDispositivo: Number(it.userIdDispositivo) || -1 },
-          select: { id: true },
-        });
-        if (!emp) { skipped++; continue; }
+        const uid = Number(it.userIdDispositivo);
+        if (!Number.isFinite(uid) || uid <= 0) { skipped++; continue; }
 
         const ts = new Date(it.timestampUTC);
         if (isNaN(ts.getTime())) { skipped++; continue; }
+
+        // 👇 Filtrar empleado por userIdDispositivo **y** sucursal del reloj
+        const emp = await prisma.empleado.findFirst({
+          where: {
+            userIdDispositivo: uid,
+            sucursalId: device.sucursalId,
+            // opcional: solo activos
+            // activo: true,
+          },
+          select: { id: true },
+        });
+
+        if (!emp) {
+          // No hay mapeo en esa sucursal → lo registramos como “skipped”
+          // (si quieres, aquí podrías crear una “bandeja de pendientes de mapear”)
+          skipped++;
+          continue;
+        }
 
         await prisma.asistenciaEvento.create({
           data: {
@@ -54,12 +72,15 @@ router.post("/asistencia/ingest", tokenCheck, async (req, res) => {
             dispositivoId: device.id,
             timestampUTC: ts,
             deviceUnix: Math.floor(ts.getTime() / 1000),
-            deviceUserSn: Number(it.userIdDispositivo) || null,
+            deviceUserSn: uid, // o el correlativo del log si lo mandas
             crudo: it.raw ? JSON.stringify(it.raw) : null,
+            // tipo: "FICHAJE", // si tu schema lo tiene
           },
         });
+
         inserted++;
       } catch (e) {
+        // Duplicado (si tienes unique en (empleadoId, dispositivoId, timestampUTC) por ejemplo)
         if (e?.code === "P2002") { dup++; continue; }
         skipped++;
       }
