@@ -1,21 +1,83 @@
 // frontend/src/pages/Dashboard.jsx
+// =============================================================
+// Panel de Asistencia - Dashboard
+// - Zona horaria unificada America/Guatemala para TODOS los cálculos/labels.
+// - KPI % Puntualidad usa el MISMO criterio que el gráfico de tendencias.
+// - Dispositivos: el dashboard NO muestra inactivos (activo=false).
+// - Estado de dispositivo: usa heartbeat (si existe) y si no, ultimoEventoUnix.
+// - Heatmap de "Entradas por hora" calibrado 0..23 con Intl.DateTimeFormat.
+// - Mantiene estructura, helpers y subcomponentes sin librerías externas.
+// =============================================================
+
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getAuth } from "../utils/auth";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:3001";
 
-/* ================= Helpers ================= */
-const tz = { timeZone: "America/Guatemala" };
-const fmtTime = (d) =>
-  d?.toLocaleTimeString("es-GT", { ...tz, hour: "2-digit", minute: "2-digit", hour12: true }) || "-";
-const fmtDate = (d) =>
-  d?.toLocaleDateString("es-GT", { ...tz, year: "numeric", month: "2-digit", day: "2-digit" }) || "-";
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const isoDaysAgo = (n) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
-const niceToday = () =>
-  new Date().toLocaleDateString("es-GT", { ...tz, weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+/* ================= Helpers de zona horaria (GT) ================= */
+const TZ = "America/Guatemala";
 
+// Formateadores reutilizables
+const dtfHM12 = new Intl.DateTimeFormat("es-GT", {
+  timeZone: TZ,
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: true,
+});
+const dtfHM24 = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ,
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+const dtfYMD = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+// Helpers de formato
+function fmtTime12(d) {
+  try { return d ? dtfHM12.format(d) : "-"; } catch { return "-"; }
+}
+function fmtDateYMD(d) {
+  try { return d ? dtfYMD.format(d) : "-"; } catch { return "-"; }
+}
+function ymdKeyFromISO(iso) {
+  // Si ya viene como 'YYYY-MM-DD', úsalo tal cual (es fecha local GT que envía el backend)
+  const s = String(iso || "");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // Si viene con tiempo (ISO), formatea a día en GT
+  try { return dtfYMD.format(new Date(s)); } catch { return s.slice(0, 10); }
+}
+function hour24FromISO(iso) {
+  try {
+    const parts = dtfHM24.formatToParts(new Date(iso));
+    const h = parts.find((p) => p.type === "hour")?.value ?? "00";
+    return Number(h);
+  } catch {
+    return 0;
+  }
+}
+function niceToday() {
+  try {
+    return new Date().toLocaleDateString("es-GT", {
+      timeZone: TZ,
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+    });
+  } catch {
+    return "";
+  }
+}
+const todayISO = () => dtfYMD.format(new Date());
+const isoDaysAgo = (n) => dtfYMD.format(new Date(Date.now() - n * 864e5));
+
+/* ========================= Componente ========================= */
 export default function Dashboard() {
   const { token } = getAuth();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -60,17 +122,20 @@ export default function Dashboard() {
   async function loadToday() {
     setLoadingKpis(true);
     try {
+      // Empleados
       const paramsEmp = {};
       if (sucursalId) paramsEmp.sucursalId = Number(sucursalId);
       const empRes = await axios.get(`${API_BASE}/empleados`, { params: paramsEmp, headers });
       const empleados = Array.isArray(empRes.data) ? empRes.data : empRes.data.items || [];
       setEmpleadosActivos(empleados.filter((e) => !!e.activo).length);
 
+      // Asistencia diaria (hoy)
       const paramsDia = {};
       if (sucursalId) paramsDia.sucursalId = Number(sucursalId);
       const { data: dia } = await axios.get(`${API_BASE}/asistencia/diaria`, { params: paramsDia, headers });
       setDiaria(Array.isArray(dia) ? dia : dia.items || []);
 
+      // Eventos recientes (10)
       const paramsEv = { limit: 10 };
       if (sucursalId) paramsEv.sucursalId = Number(sucursalId);
       axios
@@ -78,6 +143,7 @@ export default function Dashboard() {
         .then(({ data }) => setEventos(Array.isArray(data) ? data : data.items || []))
         .catch(() => {});
 
+      // Dispositivos
       axios
         .get(`${API_BASE}/dispositivos`, { headers })
         .then(({ data }) => setDispositivos(Array.isArray(data) ? data : data.items || []))
@@ -110,16 +176,11 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rangeDays, sucursalId]);
 
-  /* ========== ML: Predicciones de tardanza (CASOS FUERTES) ========== */
+  /* ========== ML: Tardanzas próximas ========== */
   async function loadPreds() {
     setLoadingPreds(true);
     try {
-      const params = {
-        days: 7,
-        threshold: 0.6, // ≥ 60% prob.
-        minObs: 2,      // mínimo 2 observaciones del mismo día de semana
-        learnDays: 365, // usa 12 meses de historial
-      };
+      const params = { days: 7, threshold: 0.6, minObs: 2, learnDays: 365 };
       if (sucursalId) params.sucursalId = Number(sucursalId);
       const { data } = await axios.get(`${API_BASE}/ml/tardanza/proximos`, { params, headers });
       setPreds(Array.isArray(data) ? data : data.items || []);
@@ -147,66 +208,65 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sucursalId]);
 
-  /* ========== KPIs calculados ========== */
+  /* ========== KPIs calculados (criterio CONSISTENTE) ========== */
   const kpis = useMemo(() => {
     const conEntrada = diaria.filter((r) => !!r.entrada).length;
+
+    // PUNTUAL = con entrada y sin tardanza y sin salida temprana
+    const puntual = diaria.filter(
+      (r) =>
+        !!r.entrada &&
+        Number(r.minutosTarde || 0) <= 0 &&
+        Number(r.minutosTemprano || 0) <= 0
+    ).length;
+
     const conSalida = diaria.filter(
       (r) => !!r.entrada && !!r.salida && new Date(r.salida) > new Date(r.entrada)
     ).length;
-
     const tarde = diaria.filter((r) => Number(r.minutosTarde || 0) > 0).length;
     const salidasTempranas = diaria.filter((r) => Number(r.minutosTemprano || 0) > 0).length;
-
     const ausentes = diaria.filter((r) => !r.entrada).length;
     const sinSalida = diaria.filter((r) => !!r.entrada && !r.salida).length;
-
-    const puntual = diaria.filter(
-      (r) => !!r.entrada && Number(r.minutosTarde || 0) <= 0 && Number(r.minutosTemprano || 0) <= 0
-    ).length;
 
     const puntualidad = conEntrada ? Math.round((puntual / conEntrada) * 100) : 0;
 
     return { conEntrada, conSalida, tarde, salidasTempranas, ausentes, sinSalida, puntualidad };
   }, [diaria]);
 
-  /* ========== Auxiliares ========== */
+  /* ========== Auxiliares UI ========== */
   const ausentesHoyLista = useMemo(
     () => diaria.filter((r) => !r.entrada).map((r) => r.empleadoNombre),
     [diaria]
   );
 
-  const topAusentes = useMemo(() => {
-    const m = new Map();
-    for (const r of historial) {
-      if ((r.estado || "").toUpperCase() === "INA") {
-        const key = `${r.empleadoId}|${r.empleadoNombre}`;
-        m.set(key, (m.get(key) || 0) + 1);
-      }
-    }
-    return [...m.entries()]
-      .map(([k, v]) => ({ empleado: k.split("|")[1], ausencias: v }))
-      .sort((a, b) => b.ausencias - a.ausencias)
-      .slice(0, 5);
-  }, [historial]);
+  // Tendencia % puntual/día: MISMO criterio que KPI
+const trendDaily = useMemo(() => {
+  const byDate = new Map();
+  for (const r of historial) {
+    // r.fecha ya viene del backend como 'YYYY-MM-DD' en zona GT → NO volver a parsearlo
+    const key = r.fecha && /^\d{4}-\d{2}-\d{2}$/.test(r.fecha)
+      ? r.fecha
+      : ymdKeyFromISO(r.entrada || r.salida || new Date().toISOString());
 
-  const trendDaily = useMemo(() => {
-    const byDate = new Map();
-    for (const r of historial) {
-      const f = r.fecha || new Date(r.entrada || r.salida || Date.now()).toISOString().slice(0, 10);
-      if (!byDate.has(f)) byDate.set(f, { conEntrada: 0, tarde: 0 });
-      if (r.entrada) {
-        byDate.get(f).conEntrada++;
-        if (Number(r.minutosTarde || 0) > 0) byDate.get(f).tarde++;
-      }
-    }
-    return [...byDate.entries()]
-      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      .map(([fecha, v]) => ({
-        fecha,
-        pct: v.conEntrada ? Math.round(((v.conEntrada - v.tarde) / v.conEntrada) * 100) : 0,
-      }));
-  }, [historial]);
+    if (!byDate.has(key)) byDate.set(key, { conEntrada: 0, puntual: 0 });
 
+    if (r.entrada) {
+      const bucket = byDate.get(key);
+      bucket.conEntrada++;
+      const esPuntual = Number(r.minutosTarde || 0) <= 0 && Number(r.minutosTemprano || 0) <= 0;
+      if (esPuntual) bucket.puntual++;
+    }
+  }
+
+  return [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([fecha, v]) => ({
+      fecha,
+      pct: v.conEntrada ? Math.round((v.puntual / v.conEntrada) * 100) : 0,
+    }));
+}, [historial]);
+
+  // Distribución por sucursal
   const trendSucursal = useMemo(() => {
     const agg = new Map();
     for (const r of historial) {
@@ -216,7 +276,11 @@ export default function Dashboard() {
 
       if (r.entrada) {
         if (Number(r.minutosTarde || 0) > 0) row.tarde++;
-        else if (Number(r.minutosTarde || 0) <= 0 && Number(r.minutosTemprano || 0) <= 0) row.puntual++;
+        else if (
+          Number(r.minutosTarde || 0) <= 0 &&
+          Number(r.minutosTemprano || 0) <= 0
+        )
+          row.puntual++;
       } else if ((r.estado || "").toUpperCase() === "INA") {
         row.ausentes++;
       }
@@ -227,48 +291,54 @@ export default function Dashboard() {
       .sort((a, b) => b.total - a.total);
   }, [historial]);
 
+  // Heatmap: entradas por hora (0..23) en TZ GT
   const heatmap = useMemo(() => {
     const arr = Array.from({ length: 24 }, () => 0);
     for (const r of historial) {
       if (!r.entrada) continue;
-      const h = new Date(r.entrada).toLocaleString("es-GT", { ...tz, hour: "2-digit", hour12: false });
-      const hour = Number(h);
-      if (Number.isFinite(hour)) arr[hour] += 1;
+      const h = hour24FromISO(r.entrada); // 0..23 según GT
+      if (Number.isFinite(h)) arr[h] += 1;
     }
     const max = Math.max(1, ...arr);
     return { values: arr, max };
   }, [historial]);
 
-  const topTardones = useMemo(() => {
-    const m = new Map();
-    for (const r of historial) {
-      if (Number(r.minutosTarde || 0) > 0) {
-        const key = `${r.empleadoId}|${r.empleadoNombre}`;
-        m.set(key, (m.get(key) || 0) + 1);
-      }
-    }
-    return [...m.entries()]
-      .map(([k, v]) => ({ empleado: k.split("|")[1], tardanzas: v }))
-      .sort((a, b) => b.tardanzas - a.tardanzas)
-      .slice(0, 5);
-  }, [historial]);
-
   /* ================= Render ================= */
   return (
     <div style={{ padding: 12 }}>
-      {/* HEADER (simple y pegado arriba) */}
-      <header className="card header" style={{ padding: 14, position: "sticky", top: 8, zIndex: 5 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      {/* HEADER */}
+      <header
+        className="card header"
+        style={{ padding: 14, position: "sticky", top: 8, zIndex: 5 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
           <div className="brand-dot" />
           <div style={{ fontWeight: 900 }}>
             <div style={{ fontSize: 18 }}>Panel de Asistencia</div>
             <div style={{ fontSize: 12, color: "#64748b" }}>{niceToday()}</div>
           </div>
 
-          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+          <div
+            style={{
+              marginLeft: "auto",
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
             <div className="field-inline">
               <label>Sucursal</label>
-              <select value={sucursalId} onChange={(e) => setSucursalId(e.target.value)}>
+              <select
+                value={sucursalId}
+                onChange={(e) => setSucursalId(e.target.value)}
+              >
                 <option value="">Todas</option>
                 {sucursales.map((s) => (
                   <option key={s.id} value={s.id}>
@@ -277,14 +347,14 @@ export default function Dashboard() {
                 ))}
               </select>
             </div>
-            <button className="btn-chip btn-emerald" onClick={loadToday}>↻ Refrescar</button>
+            <button className="btn-chip btn-emerald" onClick={loadToday}>
+              ↻ Refrescar
+            </button>
           </div>
         </div>
       </header>
 
-      {/* ======== TODO VERTICAL (una sola columna) ======== */}
-
-      {/* KPIs HOY */}
+      {/* ======================= HOY / KPIs ======================= */}
       <section className="card block" style={{ padding: 14 }}>
         <div className="section-head">
           <h3>Hoy</h3>
@@ -295,12 +365,12 @@ export default function Dashboard() {
         <div className="kpi-row">
           <KPI icon="👥" tone="slate" title="Empleados activos" value={empleadosActivos} loading={loadingKpis} />
           <KPI icon="✅" tone="emerald" title="Con entrada" value={kpis.conEntrada} loading={loadingKpis} />
-          <KPI icon="📤" tone="blue"    title="Con salida"   value={kpis.conSalida}  loading={loadingKpis} />
-          <KPI icon="⏰" tone="amber"   title="Tarde" value={kpis.tarde} loading={loadingKpis} />
-          <KPI icon="🏃" tone="rose"    title="Salidas tempranas" value={kpis.salidasTempranas} loading={loadingKpis} />
-          <KPI icon="🚫" tone="muted"   title="Ausentes" value={kpis.ausentes} loading={loadingKpis} />
-          <KPI icon="📤" tone="rose"    title="Sin salida" value={kpis.sinSalida} loading={loadingKpis} />
-          <KPI icon="🏁" tone="blue"    title="% Puntualidad" value={`${kpis.puntualidad}%`} loading={loadingKpis} />
+          <KPI icon="📤" tone="blue" title="Con salida" value={kpis.conSalida} loading={loadingKpis} />
+          <KPI icon="⏰" tone="amber" title="Tarde" value={kpis.tarde} loading={loadingKpis} />
+          <KPI icon="🏃" tone="rose" title="Salidas tempranas" value={kpis.salidasTempranas} loading={loadingKpis} />
+          <KPI icon="🚫" tone="muted" title="Ausentes" value={kpis.ausentes} loading={loadingKpis} />
+          <KPI icon="📤" tone="rose" title="Sin salida" value={kpis.sinSalida} loading={loadingKpis} />
+          <KPI icon="🏁" tone="blue" title="% Puntualidad" value={`${kpis.puntualidad}%`} loading={loadingKpis} />
         </div>
 
         {/* Ausentes hoy */}
@@ -309,26 +379,21 @@ export default function Dashboard() {
             Ausentes hoy: <strong>{kpis.ausentes}</strong>
           </span>
           {kpis.ausentes > 0 && (
-            <button className="btn-link" onClick={() => setShowAusentes((v) => !v)}>
+            <button
+              className="btn-link"
+              onClick={() => setShowAusentes((v) => !v)}
+            >
               {showAusentes ? "Ocultar lista" : "Ver lista"}
             </button>
           )}
         </div>
 
         {showAusentes && kpis.ausentes > 0 && (
-          <div className="ausentes-list">
-            {chunk(ausentesHoyLista.sort(), 3).map((col, i) => (
-              <ul key={i}>
-                {col.map((name, j) => (
-                  <li key={j}>{name}</li>
-                ))}
-              </ul>
-            ))}
-          </div>
+          <AusentesList nombres={ausentesHoyLista} />
         )}
       </section>
 
-      {/* EVENTOS RECIENTES */}
+      {/* ======================= EVENTOS RECIENTES ======================= */}
       <section className="card block" style={{ padding: 14 }}>
         <div className="section-head">
           <h3>Eventos recientes</h3>
@@ -337,20 +402,12 @@ export default function Dashboard() {
         <TableEvents rows={eventos} highlightSucursalId={sucursalId} />
       </section>
 
-      {/* DISPOSITIVOS */}
-      <section className="card block" style={{ padding: 14 }}>
-        <div className="section-head">
-          <h3>Dispositivos</h3>
-          <span className="hint">Estado por sucursal</span>
-        </div>
-        <TableDispositivos rows={dispositivos} sucursalId={sucursalId} />
-      </section>
 
-      {/* TENDENCIAS */}
+      {/* ======================= TENDENCIAS ======================= */}
       <section className="card block" style={{ padding: 14 }}>
         <div className="section-head">
           <h3>Tendencias</h3>
-        <div className="tabs">
+          <div className="tabs">
             <button
               className={`btn-chip ${rangeDays === 7 ? "btn-emerald" : "btn-slate"}`}
               onClick={() => setRangeDays(7)}
@@ -387,44 +444,59 @@ export default function Dashboard() {
 
             <div className="trend-card">
               <div className="trend-title">Top 5 tardanzas</div>
-              <TopList rows={topTardones} />
+              <TopList rows={calcTop(historial, "tarde")} />
             </div>
 
             <div className="trend-card">
-              <div className="trend-title">Top ausencias (últimos {rangeDays} días)</div>
-              <TopAusencias rows={topAusentes} />
+              <div className="trend-title">
+                Top ausencias (últimos {rangeDays} días)
+              </div>
+              <TopAusencias rows={calcTop(historial, "ausente")} />
             </div>
           </>
         )}
       </section>
 
-      {/* PREDICCIÓN: TARDANZAS PRÓXIMOS 7 DÍAS */}
+      {/* ======================= PREDICCIONES ======================= */}
       <section className="card block" style={{ padding: 14 }}>
         <div className="section-head">
           <h3>Predicción de tardanzas (próx. 7 días)</h3>
-          <span className="hint">Modelo base por frecuencia histórica del mismo día de la semana</span>
+          <span className="hint">
+            Modelo base por frecuencia histórica del mismo día de la semana
+          </span>
         </div>
 
-        {/* LEYENDA EXPLICATIVA */}
+        {/* LEYENDA */}
         <div className="info-callout">
           <div className="info-title">¿Cómo se calcula?</div>
           <ul>
-            <li><strong>obs</strong>: cuántas veces, en el historial, existe registro para ese <em>mismo día de la semana</em> (p. ej. todos los lunes).</li>
-            <li><strong>tardanzas</strong>: de esas <em>obs</em>, cuántas fueron llegando tarde.</li>
-            <li><strong>% prob.</strong> = <code>tardanzas / obs</code>. Solo mostramos <strong>casos fuertes</strong>: al menos <strong>2 obs</strong> y probabilidad <strong>≥ 60%</strong> usando el último año.</li>
+            <li>
+              <strong>obs</strong>: cuántas veces, en el historial, existe registro
+              para ese <em>mismo día de la semana</em>.
+            </li>
+            <li>
+              <strong>tardanzas</strong>: de esas <em>obs</em>, cuántas fueron
+              llegando tarde.
+            </li>
+            <li>
+              <strong>% prob.</strong> = <code>tardanzas / obs</code>. Mostramos
+              casos con <strong>≥ 2 obs</strong> y <strong>≥ 60%</strong>.
+            </li>
           </ul>
         </div>
 
         {loadingPreds ? (
           <div className="skeleton-block">Cargando…</div>
         ) : preds.length === 0 ? (
-          <div style={{ color: "#64748b" }}>Sin alertas de tardanza con suficiente evidencia.</div>
+          <div style={{ color: "#64748b" }}>
+            Sin alertas de tardanza con suficiente evidencia.
+          </div>
         ) : (
           <PredList items={preds} />
         )}
       </section>
 
-      {/* MÁS PUNTUALES POR SUCURSAL (TOP 1) */}
+      {/* ======================= MÁS PUNTUALES ======================= */}
       <section className="card block" style={{ padding: 14 }}>
         <div className="section-head">
           <h3>Más puntuales por sucursal</h3>
@@ -440,7 +512,7 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* estilos locales */}
+      {/* ======================= Estilos locales ======================= */}
       <style>{`
         .card{
           background:#fff; border:1px solid #e5e7eb; border-radius:16px;
@@ -457,7 +529,6 @@ export default function Dashboard() {
           padding:10px; border-radius:10px; border:1px solid #e5e7eb; min-width:200px; outline:none; background:#fff;
         }
 
-        /* UNA SOLA COLUMNA (todo apilado) */
         .block{ margin: 12px 0; }
 
         .section-head{
@@ -467,9 +538,7 @@ export default function Dashboard() {
         .section-head .hint{ color:#64748b; font-size:12px; font-weight:700; }
         .section-head .tabs{ margin-left:auto; display:flex; gap:6px; }
 
-        .kpi-row{
-          display:flex; flex-wrap:wrap; gap:10px;
-        }
+        .kpi-row{ display:flex; flex-wrap:wrap; gap:10px; }
         .kpi{
           min-width: 190px;
           flex: 1 1 220px;
@@ -499,13 +568,6 @@ export default function Dashboard() {
         .btn-link{
           background:transparent; border:none; color:#2563eb; font-weight:800; cursor:pointer; padding:4px 6px;
         }
-        .ausentes-list{
-          display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px;
-          padding:10px; border:1px dashed #e5e7eb; border-radius:10px; margin-top:8px; background:#f8fafc;
-        }
-        @media (max-width: 720px){ .ausentes-list{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
-        .ausentes-list ul{ margin:0; padding-left:18px; }
-        .ausentes-list li{ margin:2px 0; font-weight:700; color:#0f172a; }
 
         .btn-chip{
           appearance:none;border:none;border-radius:999px;padding:8px 12px;font-weight:900;
@@ -532,7 +594,7 @@ export default function Dashboard() {
 
         .skeleton-block{
           height:120px; border:1px dashed #e5e7eb; border-radius:12px; display:grid; place-items:center; color:#64748b;
-          background: repeating-linear-gradient( -45deg, #f8fafc, #f8fafc 10px, #ffffff 10px, #ffffff 20px);
+          background: repeating-linear-gradient(-45deg, #f8fafc, #f8fafc 10px, #ffffff 10px, #ffffff 20px);
         }
 
         .trend-card{ border:1px solid #e5e7eb; border-radius:12px; padding:10px; background:#fff; margin-bottom:10px; }
@@ -570,12 +632,22 @@ export default function Dashboard() {
         .info-callout ul{ margin:0; padding-left:18px; }
         .info-callout li{ margin:3px 0; font-size:13px; }
         .info-callout code{ background:#e5e7eb; border-radius:6px; padding:0 6px; font-weight:900; }
+
+        /* Ausentes list grid */
+        .ausentes-list{
+          display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px;
+          padding:10px; border:1px dashed #e5e7eb; border-radius:10px; margin-top:8px; background:#f8fafc;
+        }
+        @media (max-width: 720px){ .ausentes-list{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
+        .ausentes-list ul{ margin:0; padding-left:18px; }
+        .ausentes-list li{ margin:2px 0; font-weight:700; color:#0f172a; }
       `}</style>
     </div>
   );
 }
 
 /* ===================== Subcomponentes ===================== */
+
 function KPI({ title, value, tone = "slate", loading, icon }) {
   return (
     <div className={`kpi ${tone}`}>
@@ -584,6 +656,20 @@ function KPI({ title, value, tone = "slate", loading, icon }) {
         <div className="label">{title}</div>
         <div className="value">{loading ? "…" : value}</div>
       </div>
+    </div>
+  );
+}
+
+function AusentesList({ nombres }) {
+  return (
+    <div className="ausentes-list">
+      {chunk(nombres.sort(), 3).map((col, i) => (
+        <ul key={i}>
+          {col.map((name, j) => (
+            <li key={j}>{name}</li>
+          ))}
+        </ul>
+      ))}
     </div>
   );
 }
@@ -609,7 +695,9 @@ function TableEvents({ rows, highlightSucursalId }) {
               highlightSucursalId && Number(highlightSucursalId) === (r.dispositivo?.sucursalId ?? -1);
             return (
               <tr key={r.id}>
-                <td style={{ whiteSpace: "nowrap" }}>{t ? `${fmtDate(t)} ${fmtTime(t)}` : "-"}</td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  {t ? `${fmtDateYMD(t)} ${fmtTime12(t)}` : "-"}
+                </td>
                 <td>
                   <div style={{ fontWeight: 900 }}>{emp}</div>
                   <div className="sub">(EMPID {r.empleadoId})</div>
@@ -632,9 +720,14 @@ function TableEvents({ rows, highlightSucursalId }) {
   );
 }
 
+// Tabla de dispositivos: oculta inactivos y usa heartbeat si existe
 function TableDispositivos({ rows, sucursalId }) {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const filtered = rows.filter((d) => !sucursalId || Number(sucursalId) === d.sucursalId);
+  const nowMs = Date.now();
+  const activos = rows.filter((d) => d.activo);
+  const filtered = activos.filter(
+    (d) => !sucursalId || Number(sucursalId) === d.sucursalId
+  );
+
   return (
     <div className="table-wrap">
       <table>
@@ -650,23 +743,38 @@ function TableDispositivos({ rows, sucursalId }) {
         </thead>
         <tbody>
           {filtered.map((d) => {
-            const last = d.ultimoEventoUnix ? new Date(d.ultimoEventoUnix * 1000) : null;
-            const ageMin = d.ultimoEventoUnix ? Math.round((nowSec - d.ultimoEventoUnix) / 60) : null;
-            const online = ageMin != null && ageMin <= 30;
-            const badge =
-              ageMin == null
-                ? { cls: "badge err", text: "Sin datos" }
-                : online
-                ? { cls: "badge ok", text: "Online" }
-                : { cls: "badge warn", text: "Inactivo" };
+            // Preferencia: heartbeat; fallback: ultimoEventoUnix
+            let lastDate = null;
+            if (d.lastHeartbeatAt) lastDate = new Date(d.lastHeartbeatAt);
+            else if (d.ultimoEventoUnix) lastDate = new Date(d.ultimoEventoUnix * 1000);
+
+            // Online si heartbeat ok y fresco (<10 min) OR si ultimo evento <= 30 min
+            const freshMs = 10 * 60 * 1000;
+            const okHeartbeat =
+              d.lastHeartbeatAt &&
+              d.lastHeartbeatOk &&
+              nowMs - new Date(d.lastHeartbeatAt).getTime() < freshMs;
+
+            const okByEvents =
+              d.ultimoEventoUnix &&
+              nowMs - d.ultimoEventoUnix * 1000 <= 30 * 60 * 1000;
+
+            let badge = { cls: "badge err", text: "Sin datos" };
+            if (okHeartbeat || okByEvents) badge = { cls: "badge ok", text: "Online" };
+            else if (lastDate) badge = { cls: "badge warn", text: "Inactivo" };
+
             return (
               <tr key={d.id}>
                 <td style={{ fontWeight: 900 }}>{d.nombre}</td>
                 <td align="center">{d.ip}</td>
                 <td align="center">{d.puerto}</td>
                 <td>{d.sucursal?.nombre || "-"}</td>
-                <td align="center">{last ? `${fmtDate(last)} ${fmtTime(last)}` : "-"}</td>
-                <td align="center"><span className={badge.cls}>{badge.text}</span></td>
+                <td align="center">
+                  {lastDate ? `${fmtDateYMD(lastDate)} ${fmtTime12(lastDate)}` : "-"}
+                </td>
+                <td align="center">
+                  <span className={badge.cls}>{badge.text}</span>
+                </td>
               </tr>
             );
           })}
@@ -700,19 +808,34 @@ function MiniLine({ data }) {
           .join(" ");
   return (
     <div style={{ overflowX: "auto" }}>
-      <svg width={w} height={h} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8 }}>
+      <svg
+        width={w}
+        height={h}
+        style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8 }}
+      >
         {[0, 25, 50, 75, 100].map((p) => {
           const y = pad + (1 - p / 100) * (h - pad * 2);
           return <line key={p} x1={pad} y1={y} x2={w - pad} stroke="#eef2f7" />;
         })}
-        {points && <polyline fill="none" stroke="#3b82f6" strokeWidth="2" points={points} />}
+        {points && (
+          <polyline fill="none" stroke="#3b82f6" strokeWidth="2" points={points} />
+        )}
         {data.map((d, i) => {
           const x = pad + (i * (w - pad * 2)) / Math.max(1, data.length - 1);
           const y = pad + (1 - d.pct / 100) * (h - pad * 2);
           return <circle key={i} cx={x} cy={y} r="3" fill="#3b82f6" />;
         })}
       </svg>
-      <div style={{ display: "flex", gap: 12, fontSize: 12, color: "#64748b", marginTop: 6, flexWrap: "wrap" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          fontSize: 12,
+          color: "#64748b",
+          marginTop: 6,
+          flexWrap: "wrap",
+        }}
+      >
         {data.map((d) => (
           <span key={d.fecha}>
             {d.fecha}: {d.pct}%
@@ -725,7 +848,8 @@ function MiniLine({ data }) {
 
 // Barras apiladas (puntual/tarde/ausentes) por sucursal con porcentajes visibles
 function StackedBars({ data }) {
-  if (data.length === 0) return <div style={{ color: "#64748b" }}>Sin datos</div>;
+  if (data.length === 0)
+    return <div style={{ color: "#64748b" }}>Sin datos</div>;
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -767,9 +891,15 @@ function StackedBars({ data }) {
 
             {/* Porcentajes debajo */}
             <div className="bar-numbers">
-              <span className="num green">Puntual: <strong>{pP}%</strong></span>
-              <span className="num amber">Tarde: <strong>{pT}%</strong></span>
-              <span className="num muted">Ausente: <strong>{pA}%</strong></span>
+              <span className="num green">
+                Puntual: <strong>{pP}%</strong>
+              </span>
+              <span className="num amber">
+                Tarde: <strong>{pT}%</strong>
+              </span>
+              <span className="num muted">
+                Ausente: <strong>{pA}%</strong>
+              </span>
             </div>
           </div>
         );
@@ -780,7 +910,13 @@ function StackedBars({ data }) {
 
 function Heatmap({ hours, max }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(24, 1fr)", gap: 4 }}>
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(24, 1fr)",
+        gap: 4,
+      }}
+    >
       {hours.map((v, i) => {
         const alpha = max ? 0.15 + (0.85 * v) / max : 0.15;
         return (
@@ -807,7 +943,8 @@ function Heatmap({ hours, max }) {
 }
 
 function TopList({ rows }) {
-  if (rows.length === 0) return <div style={{ color: "#64748b" }}>Sin tardanzas</div>;
+  if (!rows || rows.length === 0)
+    return <div style={{ color: "#64748b" }}>Sin tardanzas</div>;
   return (
     <div style={{ display: "grid", gap: 6 }}>
       {rows.map((r, i) => (
@@ -830,7 +967,8 @@ function TopList({ rows }) {
 }
 
 function TopAusencias({ rows }) {
-  if (rows.length === 0) return <div style={{ color: "#64748b" }}>Sin ausencias</div>;
+  if (!rows || rows.length === 0)
+    return <div style={{ color: "#64748b" }}>Sin ausencias</div>;
   return (
     <div style={{ display: "grid", gap: 6 }}>
       {rows.map((r, i) => (
@@ -851,15 +989,18 @@ function TopAusencias({ rows }) {
     </div>
   );
 }
-
 /* ====== Predicciones UI ====== */
 function PredList({ items = [] }) {
-  // agrupar por fecha
+  // Agrupar por fecha ISO (yyyy-mm-dd)
   const byDate = items.reduce((acc, p) => {
     (acc[p.fechaISO] ||= []).push(p);
     return acc;
   }, {});
   const dates = Object.keys(byDate).sort();
+
+  if (dates.length === 0) {
+    return <div style={{ color: "#64748b" }}>Sin alertas de tardanza con suficiente evidencia.</div>;
+  }
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -898,12 +1039,16 @@ function PredList({ items = [] }) {
 
 /* ====== Ganadores puntuales por sucursal ====== */
 function WinnersList({ rows = [] }) {
-  // ya viene 1 por sucursal; agrupamos por sucursal solo para orden
+  // viene top 1 por sucursal; agrupamos por sucursal solo para orden alfabético
   const bySuc = rows.reduce((acc, r) => {
     (acc[r.sucursalNombre || "—"] ||= []).push(r);
     return acc;
   }, {});
   const sucs = Object.keys(bySuc).sort((a, b) => a.localeCompare(b));
+
+  if (sucs.length === 0) {
+    return <div style={{ color: "#64748b" }}>Sin datos</div>;
+  }
 
   return (
     <div style={{ display: "grid", gap: 10 }}>
@@ -913,9 +1058,7 @@ function WinnersList({ rows = [] }) {
           <div key={suc} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <strong>{suc}</strong>
-              <span className="sub">
-                {r.diasTrabajados} días analizados (ganador)
-              </span>
+              <span className="sub">{r.diasTrabajados} días analizados (ganador)</span>
             </div>
             <div
               style={{
@@ -941,11 +1084,41 @@ function WinnersList({ rows = [] }) {
   );
 }
 
-/* ===== util: partir array en columnas ===== */
+/* ===================== Utils ===================== */
 function chunk(arr = [], size = 3) {
   const out = [];
   for (let i = 0; i < arr.length; i += Math.ceil(arr.length / size)) {
     out.push(arr.slice(i, i + Math.ceil(arr.length / size)));
   }
   return out;
+}
+
+// Top tardanzas / ausentes simple desde historial
+function calcTop(historial = [], tipo = "tarde") {
+  const m = new Map();
+  for (const r of historial) {
+    if (tipo === "tarde" && Number(r.minutosTarde || 0) > 0) {
+      const key = `${r.empleadoId}|${r.empleadoNombre}`;
+      m.set(key, (m.get(key) || 0) + 1);
+    }
+    if (
+      tipo === "ausente" &&
+      !r.entrada &&
+      (r.estado || "").toUpperCase() === "INA"
+    ) {
+      const key = `${r.empleadoId}|${r.empleadoNombre}`;
+      m.set(key, (m.get(key) || 0) + 1);
+    }
+  }
+  return [...m.entries()]
+    .map(([k, v]) => {
+      const [, nombre] = k.split("|");
+      return tipo === "tarde"
+        ? { empleado: nombre, tardanzas: v }
+        : { empleado: nombre, ausencias: v };
+    })
+    .sort((a, b) =>
+      tipo === "tarde" ? b.tardanzas - a.tardanzas : b.ausencias - a.ausencias
+    )
+    .slice(0, 5);
 }

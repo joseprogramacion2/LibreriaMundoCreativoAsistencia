@@ -300,14 +300,7 @@ export default function Dispositivos() {
                           Activar
                         </button>
                       )}
-                      <button
-                        className="btn-chip btn-blue"
-                        onClick={() => testDevice(r.id)}
-                        disabled={!!testingId}
-                        title="Probar conectividad"
-                      >
-                        {testingId === r.id ? "Probando…" : "Probar"}
-                      </button>
+                    
 
                     </div>
                   </td>
